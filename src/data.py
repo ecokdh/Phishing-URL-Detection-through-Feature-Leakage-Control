@@ -78,22 +78,22 @@ def load_split(scenario: str = "S1", split: str = "domain", url_col: str = "URL"
                df: pd.DataFrame | None = None) -> SplitData:
     """시나리오와 분할 방식에 맞는 train/val/test를 돌려준다.
 
-    scenario : "S1" (전체 정형 피처) | "S2" (누수 후보 제거) | "S3" (URL 문자열)
+    scenario : "S1" (전체 정형 피처) | "S2" (누수 후보 제거) | "S3" (URL 정형 피처) | "S4" (URL 문자열)
     split    : "random" | "domain" | "domain_public"
-    url_col  : S3에서 쓸 열. "URL" (원본) 또는 "url_stripped" (scheme, www., 끝 슬래시 제거)
+    url_col  : S4에서 쓸 열. "URL" (원본) 또는 "url_stripped" (scheme, www., 끝 슬래시 제거)
     df       : load_dataset() 결과를 재사용할 때 넘긴다 (반복 호출 시 속도용)
     """
     if split not in SPLIT_COLUMNS:
         raise ValueError(f"split은 {list(SPLIT_COLUMNS)} 중 하나")
     feats = load_features()
-    if scenario in ("S1", "S2"):
+    if scenario in ("S1", "S2", "S3"):
         cols: list[str] | str = feats[scenario]
-    elif scenario == "S3":
+    elif scenario == "S4":
         if url_col not in URL_COLUMNS:
             raise ValueError(f"url_col은 {URL_COLUMNS} 중 하나")
         cols = url_col
     else:
-        raise ValueError("scenario는 S1, S2, S3 중 하나")
+        raise ValueError("scenario는 S1, S2, S3, S4 중 하나")
 
     if df is None:
         df = load_dataset()
@@ -119,7 +119,7 @@ def load_split(scenario: str = "S1", split: str = "domain", url_col: str = "URL"
 
 
 # ---------------------------------------------------------------------------
-# S3: 문자 단위 인코딩 (프레임워크 무관, numpy 배열 반환)
+# S4: 문자 단위 인코딩 (프레임워크 무관, numpy 배열 반환)
 # ---------------------------------------------------------------------------
 PAD, UNK = 0, 1
 
