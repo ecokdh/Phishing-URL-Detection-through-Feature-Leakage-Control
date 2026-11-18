@@ -13,10 +13,10 @@ S1을 random, domain 분할에서 시드 3개로 전체 실행:
 
 시나리오 (피처 목록은 모두 features.json에서 읽는다)
 ------------------------------------------------
-S1 : 전체 정형 피처
-S2 : 누수 후보 제거 (11/18 확정 전에는 초안)
-S3 : URL에서 직접 계산되는 정형 피처 (참조 비교 피처 3개와 IsHTTPS 제외)
-S4 (URL 문자열)는 딥러닝 트랙용이라 여기서는 다루지 않는다.
+--scenarios에는 features.json에 정형 피처 목록으로 들어 있는 이름이면 무엇이든 넣을 수 있다.
+예: S1 (전체), S2A / S2B (누수 후보 제거 단계별), S3 (URL 기반 정형 피처),
+    url_stripped로 다시 계산한 S3 (dataset.csv에 새 열로 추가된 경우도 가능)
+분할(train/val/test, cv_fold)은 모든 시나리오가 같다. S4(URL 문자열)는 딥러닝 트랙용.
 
 다시 실행
 ---------
@@ -58,7 +58,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
-from src.data import ROOT, load_dataset, load_split
+from src.data import ROOT, SPLIT_COLUMNS, load_dataset, load_features, load_split
 
 OUT = ROOT / "results" / "classic_ml"
 TUNE_ROWS = 40_000          # 튜닝에 쓸 train 표본 크기 (None이면 전체)
@@ -96,13 +96,36 @@ MODELS = ["lr", "dt", "rf", "mlp"]
 # 데이터
 # ---------------------------------------------------------------------------
 def get_split(df, scenario: str, split: str):
-    if scenario not in ("S1", "S2", "S3"):
-        raise ValueError("고전 ML은 S1, S2, S3만 다룬다 (S4는 URL 문자열)")
-    d = load_split(scenario, split, df=df)
+    """features.json에 있는 시나리오 이름이면 무엇이든 받는다 (예: S1, S2, S2A, S2B, S3, S3_stripped).
+
+    분할(train/val/test, cv_fold, uid)은 S1과 똑같이 쓰고 피처 열만 바꾼다.
+    dataset.csv에 새로 추가된 열(예: url_stripped로 다시 계산한 피처)도 쓸 수 있다.
+    """
+    feats = load_features()
+    cols = feats.get(scenario)
+    if not isinstance(cols, list) or scenario == "S4":
+        usable = [k for k, v in feats.items()
+                  if isinstance(v, list) and k != "S4" and k != "excluded_always" and not k.endswith(("_removed", "_review"))]
+        raise SystemExit(f"'{scenario}'는 features.json에 정형 피처 목록으로 없습니다. "
+                         f"쓸 수 있는 이름: {', '.join(usable)}")
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise SystemExit(f"{scenario}의 피처 중 dataset.csv에 없는 열이 있습니다: {missing}")
+    d = load_split("S1", split, df=df)
     if not isinstance(d.X_train, pd.DataFrame):
-        raise SystemExit(f"{scenario}가 정형 피처가 아니라 URL 문자열로 불러와졌습니다. "
-                         "EDA 브랜치의 src/data.py와 S3가 들어간 features.json이 필요합니다.")
+        raise SystemExit("S1이 정형 피처로 불러와지지 않았습니다. src/data.py와 features.json을 확인하세요.")
+    table = df.set_index("uid")[cols]
+    d.X_train = table.loc[_train_uids(df, split)].reset_index(drop=True)
+    d.X_val = table.loc[d.uid["val"]].reset_index(drop=True)
+    d.X_test = table.loc[d.uid["test"]].reset_index(drop=True)
+    d.features, d.scenario = cols, scenario
     return d
+
+
+def _train_uids(df, split: str):
+    """load_split과 같은 순서의 train uid (SplitData.uid["train"]과 같다)."""
+    col = SPLIT_COLUMNS[split]
+    return df.loc[df[col] == "train", "uid"].to_numpy()
 
 
 def tune_subset(d, n: int | None, seed: int = 0):
@@ -169,7 +192,8 @@ def save_metrics(path: Path, new: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="고전 ML 실험 (LR, DT, RF, MLP)")
-    ap.add_argument("--scenarios", nargs="+", default=["S1"], choices=["S1", "S2", "S3"])
+    ap.add_argument("--scenarios", nargs="+", default=["S1"],
+                    help="features.json에 있는 시나리오 이름 (예: S1 S2A S2B S3)")
     ap.add_argument("--splits", nargs="+", default=["domain"],
                     choices=["random", "domain", "domain_public"])
     ap.add_argument("--models", nargs="+", default=MODELS, choices=MODELS)
