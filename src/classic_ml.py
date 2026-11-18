@@ -8,17 +8,15 @@
 S1을 random, domain 분할에서 시드 3개로 전체 실행:
     python -m src.classic_ml --scenarios S1 --splits random domain
 
-전부 실행 (S1, S2, S3F x random, domain):
-    python -m src.classic_ml --scenarios S1 S2 S3F --splits random domain
+전부 실행 (S1, S2, S3 x random, domain):
+    python -m src.classic_ml --scenarios S1 S2 S3 --splits random domain
 
-시나리오
---------
-S1  : 전체 정형 피처 (features.json "S1")
-S2  : 누수 후보 제거 (features.json "S2", 11/18 확정 전에는 초안)
-S3F : URL에서 직접 계산되는 정형 피처만 (제안서의 S3).
-      features.json에 "S3F" 키가 있으면 그 목록을 쓰고, 없으면 아래 S3F_DEFAULT를 쓴다.
-      팀 문서의 "S3"(URL 문자열)는 딥러닝 트랙용이라 여기서는 다루지 않는다.
-      --s3f-drop-https를 붙이면 IsHTTPS를 빼고, 결과에는 "S3F_nohttps"로 저장된다.
+시나리오 (피처 목록은 모두 features.json에서 읽는다)
+------------------------------------------------
+S1 : 전체 정형 피처
+S2 : 누수 후보 제거 (11/18 확정 전에는 초안)
+S3 : URL에서 직접 계산되는 정형 피처 (참조 비교 피처 3개와 IsHTTPS 제외)
+S4 (URL 문자열)는 딥러닝 트랙용이라 여기서는 다루지 않는다.
 
 다시 실행
 ---------
@@ -60,22 +58,11 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
-from src.data import ROOT, load_dataset, load_features, load_split
+from src.data import ROOT, load_dataset, load_split
 
 OUT = ROOT / "results" / "classic_ml"
 TUNE_ROWS = 40_000          # 튜닝에 쓸 train 표본 크기 (None이면 전체)
 SCORING = "average_precision"  # 튜닝 기준: 피싱 클래스 PR-AUC
-
-# 제안서 S3: URL 문자열에서 바로 계산되는 피처만.
-# 제외: 페이지 소스 기반 피처, 참조 목록/통계로 계산되는 URLSimilarityIndex, TLDLegitimateProb, URLCharProb
-# IsHTTPS는 "정상은 전부 https://www." 편향 때문에 팀 논의 중이라 --s3f-drop-https로 뺄 수 있게 둔다.
-S3F_DEFAULT = [
-    "URLLength", "DomainLength", "IsDomainIP", "CharContinuationRate", "TLDLength",
-    "NoOfSubDomain", "HasObfuscation", "NoOfObfuscatedChar", "ObfuscationRatio",
-    "NoOfLettersInURL", "LetterRatioInURL", "NoOfDegitsInURL", "DegitRatioInURL",
-    "NoOfEqualsInURL", "NoOfQMarkInURL", "NoOfAmpersandInURL",
-    "NoOfOtherSpecialCharsInURL", "SpacialCharRatioInURL", "IsHTTPS",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -108,24 +95,14 @@ MODELS = ["lr", "dt", "rf", "mlp"]
 # ---------------------------------------------------------------------------
 # 데이터
 # ---------------------------------------------------------------------------
-def s3f_features(drop_https: bool) -> list[str]:
-    feats = load_features()
-    cols = list(feats.get("S3F", S3F_DEFAULT))
-    if drop_https and "IsHTTPS" in cols:
-        cols.remove("IsHTTPS")
-    return cols
-
-
-def get_split(df, scenario: str, split: str, drop_https: bool):
-    if scenario in ("S1", "S2"):
-        return load_split(scenario, split, df=df)
-    if scenario == "S3F":
-        d = load_split("S1", split, df=df)
-        cols = s3f_features(drop_https)
-        d.X_train, d.X_val, d.X_test = d.X_train[cols], d.X_val[cols], d.X_test[cols]
-        d.features, d.scenario = cols, "S3F"
-        return d
-    raise ValueError("scenario는 S1, S2, S3F 중 하나")
+def get_split(df, scenario: str, split: str):
+    if scenario not in ("S1", "S2", "S3"):
+        raise ValueError("고전 ML은 S1, S2, S3만 다룬다 (S4는 URL 문자열)")
+    d = load_split(scenario, split, df=df)
+    if not isinstance(d.X_train, pd.DataFrame):
+        raise SystemExit(f"{scenario}가 정형 피처가 아니라 URL 문자열로 불러와졌습니다. "
+                         "EDA 브랜치의 src/data.py와 S3가 들어간 features.json이 필요합니다.")
+    return d
 
 
 def tune_subset(d, n: int | None, seed: int = 0):
@@ -192,14 +169,13 @@ def save_metrics(path: Path, new: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="고전 ML 실험 (LR, DT, RF, MLP)")
-    ap.add_argument("--scenarios", nargs="+", default=["S1"], choices=["S1", "S2", "S3F"])
+    ap.add_argument("--scenarios", nargs="+", default=["S1"], choices=["S1", "S2", "S3"])
     ap.add_argument("--splits", nargs="+", default=["domain"],
                     choices=["random", "domain", "domain_public"])
     ap.add_argument("--models", nargs="+", default=MODELS, choices=MODELS)
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     ap.add_argument("--tune-rows", type=int, default=TUNE_ROWS,
                     help="튜닝에 쓸 train 표본 크기 (0이면 전체)")
-    ap.add_argument("--s3f-drop-https", action="store_true", help="S3F에서 IsHTTPS 제외")
     ap.add_argument("--quick", action="store_true",
                     help="동작 확인용: train 2만 행, 튜닝 1만 행, 시드 1개")
     ap.add_argument("--overwrite", action="store_true", help="이미 있는 결과도 다시 실행")
@@ -222,15 +198,14 @@ def main():
 
     for scen in a.scenarios:
         for split in a.splits:
-            d = get_split(df, scen, split, a.s3f_drop_https)
+            d = get_split(df, scen, split)
             if a.quick:
                 keep = np.random.default_rng(0).choice(len(d.y_train), 20_000, replace=False)
                 keep.sort()
                 d.X_train, d.y_train = d.X_train.iloc[keep], d.y_train.iloc[keep]
                 d.cv_fold, d.groups = d.cv_fold.iloc[keep], d.groups.iloc[keep]
             cols = list(d.X_train.columns)
-            # IsHTTPS를 뺀 S3F는 이름을 따로 붙여서 같은 폴더에 저장해도 결과가 섞이지 않게 한다
-            label = "S3F_nohttps" if (scen == "S3F" and a.s3f_drop_https) else scen
+            label = scen
             print(f"\n=== {label} / {split}: 피처 {len(cols)}개, "
                   f"train {len(d.y_train):,} / val {len(d.y_val):,} / test {len(d.y_test):,}")
 
