@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATASET = ROOT / "data" / "processed" / "dataset.csv"
 SPLITS = ROOT / "data" / "splits" / "splits.csv"
 FEATURES = ROOT / "data" / "splits" / "features.json"
+S3_STRIPPED = ROOT / "data" / "processed" / "s3_stripped.csv"  # src/s3_stripped.py 출력 (있을 때만 합침)
 
 SPLIT_COLUMNS = {
     "random": "split_random",
@@ -71,6 +72,8 @@ def load_dataset() -> pd.DataFrame:
     sp = pd.read_csv(SPLITS)
     out = df.merge(sp, on="uid", how="inner", validate="one_to_one")
     assert len(out) == len(df) == len(sp), "dataset.csv와 splits.csv의 uid가 일치하지 않습니다"
+    if S3_STRIPPED.exists():
+        out = out.merge(pd.read_csv(S3_STRIPPED), on="uid", how="left", validate="one_to_one")
     return out
 
 
@@ -79,6 +82,7 @@ def load_split(scenario: str = "S1", split: str = "domain", url_col: str = "URL"
     """시나리오와 분할 방식에 맞는 train/val/test를 돌려준다.
 
     scenario : "S1" (전체 정형 피처) | "S2" (누수 후보 제거) | "S3" (URL 정형 피처) | "S4" (URL 문자열)
+               | "S3_stripped" (S3를 url_stripped 기준으로 다시 계산, src/s3_stripped.py 실행 후 사용)
     split    : "random" | "domain" | "domain_public"
     url_col  : S4에서 쓸 열. "URL" (원본) 또는 "url_stripped" (scheme, www., 끝 슬래시 제거)
     df       : load_dataset() 결과를 재사용할 때 넘긴다 (반복 호출 시 속도용)
@@ -86,14 +90,16 @@ def load_split(scenario: str = "S1", split: str = "domain", url_col: str = "URL"
     if split not in SPLIT_COLUMNS:
         raise ValueError(f"split은 {list(SPLIT_COLUMNS)} 중 하나")
     feats = load_features()
-    if scenario in ("S1", "S2", "S3"):
+    if scenario in ("S1", "S2", "S3", "S3_stripped"):
+        if scenario not in feats:
+            raise ValueError(f"features.json에 {scenario}가 없습니다 (S3_stripped는 python -m src.s3_stripped 먼저 실행)")
         cols: list[str] | str = feats[scenario]
     elif scenario == "S4":
         if url_col not in URL_COLUMNS:
             raise ValueError(f"url_col은 {URL_COLUMNS} 중 하나")
         cols = url_col
     else:
-        raise ValueError("scenario는 S1, S2, S3, S4 중 하나")
+        raise ValueError("scenario는 S1, S2, S3, S3_stripped, S4 중 하나")
 
     if df is None:
         df = load_dataset()
