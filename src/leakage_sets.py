@@ -1,8 +1,12 @@
-"""S2A, S2B, S2C (누수 후보 제거 단계별) 피처 목록을 features.json에 추가한다.
+"""S2A, S2B, S2C, S2D (누수 후보 제거 단계별) 피처 목록을 features.json에 추가한다.
 
 11/18 팀 결정: 최종 S2는 S2B. S2A는 S1 -> S2A -> S2B 단계별 비교(ablation)용으로 함께 둔다.
 11/20 추가: S2C = S2B에서 NoOfImage, NoOfJS, NoOfCSS까지 제거 (S2B 결과의 RF 중요도 1~3위).
     피싱의 약 69%가 이미지, JS, CSS가 모두 0인 빈 페이지(정상 0%)라 "빈 페이지면 피싱"을 배울 수 있다.
+11/20 추가: S2D = S2C에서 남은 원본 URL 피처를 url_stripped 기준 재계산 값(_s, src/s3_stripped.py)으로 교체.
+    원본 URLLength는 "https://www." 12자를 포함해 세고 글자, 숫자, 특수문자 수는 앞부분을 빼고 세서,
+    URLLength - (글자+숫자+특수문자+=?& 개수)가 정상은 전부 12, 피싱은 대부분 7~11이다 (이 값 하나로 정확도 약 98.7%).
+    피처를 빼도 남은 피처의 조합으로 앞부분 정보가 복원되므로 S2C까지는 앞부분 누수가 남아 있다.
 기존 "S2" 키는 02 노트북이 만든 초안(= S2A)이라 이전 결과와의 호환을 위해 그대로 둔다.
 
 제거 기준 (01 노트북 8절과 같은 기준)
@@ -15,14 +19,18 @@ B : 수집 과정이나 페이지 구성 방식 때문에 라벨과 직접 연�
 ----
 data/splits/features.json 에 추가하는 키
     S2A, S2B, S2C        : 학습에 쓸 피처 목록 (S1에서 제거 목록을 뺀 것)
+    S2D                  : S2C와 같은 피처 구성, URL 피처만 _s 열로 교체 (개수 같음)
     S2A_removed, S2B_removed, S2C_removed : 각각 제거한 피처 (누적)
+    S2D_replaced         : S2D에서 _s 열로 바꾼 원본 피처
     S2_rationale         : 피처별 {stage, criterion, reason}
 02 노트북을 다시 돌려 features.json을 새로 만들면 이 키들이 지워지므로 이 스크립트도 다시 실행한다.
+S2D는 data/processed/s3_stripped.csv가 있어야 학습할 수 있다 (python -m src.s3_stripped 먼저 실행).
 
 실행 (저장소 최상위에서)
 ------------------------
+    python -m src.s3_stripped            # S2D용 _s 열 (한 번만)
     python -m src.leakage_sets           # 근거 표 출력 + features.json에 추가
-    python -m src.classic_ml --scenarios S1 S2A S2B S2C
+    python -m src.classic_ml --scenarios S1 S2A S2B S2C S2D
     python -m src.leakage_sets --check   # 저장 없이 근거 표만
 """
 from __future__ import annotations
@@ -34,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 from src.data import DATASET, FEATURES
+from src.s3_stripped import S3_COLS, SUFFIX
 
 # (피처, 단계, 기준, 근거)
 RATIONALE = [
@@ -92,16 +101,20 @@ def save() -> None:
     feats["S2A"] = [c for c in s1 if c not in S2A_REMOVE]
     feats["S2B"] = [c for c in s1 if c not in S2B_REMOVE]
     feats["S2C"] = [c for c in s1 if c not in S2C_REMOVE]
+    feats["S2D"] = [c + SUFFIX if c in S3_COLS else c for c in feats["S2C"]]
+    feats["S2D_replaced"] = [c for c in feats["S2C"] if c in S3_COLS]
     feats["S2A_removed"] = S2A_REMOVE
     feats["S2B_removed"] = S2B_REMOVE
     feats["S2C_removed"] = S2C_REMOVE
     feats["S2_rationale"] = {f: {"stage": f"S2{s}", "criterion": c, "reason": r} for f, s, c, r in RATIONALE}
-    feats["S2_status"] = ("11/18 팀 결정: 최종 S2 = S2B. S2A는 단계별 비교용. 11/20 S2C 추가 (빈 페이지 피처 제거). "
+    feats["S2_status"] = ("11/18 팀 결정: 최종 S2 = S2B. S2A는 단계별 비교용. 11/20 S2C 추가 (빈 페이지 피처 제거), "
+                          "S2D 추가 (S2C의 URL 피처를 url_stripped 재계산 값으로 교체). "
                           "'S2' 키는 초안(= S2A)으로 호환용")
     with open(FEATURES, "w", encoding="utf-8") as f:
         json.dump(feats, f, ensure_ascii=False, indent=2)
     print(f"\nfeatures.json에 추가: S2A {len(feats['S2A'])}개 (제거 {len(S2A_REMOVE)}), "
-          f"S2B {len(feats['S2B'])}개 (제거 {len(S2B_REMOVE)}), S2C {len(feats['S2C'])}개 (제거 {len(S2C_REMOVE)})")
+          f"S2B {len(feats['S2B'])}개 (제거 {len(S2B_REMOVE)}), S2C {len(feats['S2C'])}개 (제거 {len(S2C_REMOVE)}), "
+          f"S2D {len(feats['S2D'])}개 (URL 피처 {len(feats['S2D_replaced'])}개 교체)")
 
 
 def main() -> None:
