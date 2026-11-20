@@ -1,6 +1,8 @@
-"""S2A, S2B (누수 후보 제거 단계별) 피처 목록을 features.json에 추가한다.
+"""S2A, S2B, S2C (누수 후보 제거 단계별) 피처 목록을 features.json에 추가한다.
 
 11/18 팀 결정: 최종 S2는 S2B. S2A는 S1 -> S2A -> S2B 단계별 비교(ablation)용으로 함께 둔다.
+11/20 추가: S2C = S2B에서 NoOfImage, NoOfJS, NoOfCSS까지 제거 (S2B 결과의 RF 중요도 1~3위).
+    피싱의 약 69%가 이미지, JS, CSS가 모두 0인 빈 페이지(정상 0%)라 "빈 페이지면 피싱"을 배울 수 있다.
 기존 "S2" 키는 02 노트북이 만든 초안(= S2A)이라 이전 결과와의 호환을 위해 그대로 둔다.
 
 제거 기준 (01 노트북 8절과 같은 기준)
@@ -12,14 +14,15 @@ B : 수집 과정이나 페이지 구성 방식 때문에 라벨과 직접 연�
 출력
 ----
 data/splits/features.json 에 추가하는 키
-    S2A, S2B             : 학습에 쓸 피처 목록 (S1에서 제거 목록을 뺀 것)
-    S2A_removed, S2B_removed : 각각 제거한 피처
+    S2A, S2B, S2C        : 학습에 쓸 피처 목록 (S1에서 제거 목록을 뺀 것)
+    S2A_removed, S2B_removed, S2C_removed : 각각 제거한 피처 (누적)
     S2_rationale         : 피처별 {stage, criterion, reason}
 02 노트북을 다시 돌려 features.json을 새로 만들면 이 키들이 지워지므로 이 스크립트도 다시 실행한다.
 
 실행 (저장소 최상위에서)
 ------------------------
     python -m src.leakage_sets           # 근거 표 출력 + features.json에 추가
+    python -m src.classic_ml --scenarios S1 S2A S2B S2C
     python -m src.leakage_sets --check   # 저장 없이 근거 표만
 """
 from __future__ import annotations
@@ -47,9 +50,13 @@ RATIONALE = [
     ("HasDescription",       "B", "B", "meta description 유무. 메인 페이지 구성과 직결"),
     ("NoOfExternalRef",      "B", "B", "외부 링크 수. 페이지 크기(메인 페이지 vs 단일 페이지)에 비례"),
     ("NoOfSelfRef",          "B", "B", "자기 링크 수. 페이지 크기에 비례"),
+    ("NoOfImage",            "C", "B", "이미지 수. 피싱의 약 69%가 이미지·JS·CSS 모두 0인 빈 페이지(수집 시점에 삭제·에러 추정), 정상 0%"),
+    ("NoOfJS",               "C", "B", "JS 파일 수. NoOfImage와 같은 이유 (정상 중앙값 14, 피싱 0)"),
+    ("NoOfCSS",              "C", "B", "CSS 파일 수. NoOfImage와 같은 이유 (정상 중앙값 6, 피싱 0)"),
 ]
 S2A_REMOVE = [f for f, stage, _, _ in RATIONALE if stage == "A"]
-S2B_REMOVE = [f for f, _, _, _ in RATIONALE]
+S2B_REMOVE = [f for f, stage, _, _ in RATIONALE if stage in ("A", "B")]
+S2C_REMOVE = [f for f, _, _, _ in RATIONALE]
 
 
 def single_feature_acc(x: pd.Series, y: pd.Series) -> float:
@@ -79,26 +86,29 @@ def save() -> None:
     with open(FEATURES, encoding="utf-8") as f:
         feats = json.load(f)
     s1 = feats["S1"]
-    missing = [c for c in S2B_REMOVE if c not in s1]
+    missing = [c for c in S2C_REMOVE if c not in s1]
     if missing:
         raise SystemExit(f"S1에 없는 피처가 있습니다: {missing}")
     feats["S2A"] = [c for c in s1 if c not in S2A_REMOVE]
     feats["S2B"] = [c for c in s1 if c not in S2B_REMOVE]
+    feats["S2C"] = [c for c in s1 if c not in S2C_REMOVE]
     feats["S2A_removed"] = S2A_REMOVE
     feats["S2B_removed"] = S2B_REMOVE
+    feats["S2C_removed"] = S2C_REMOVE
     feats["S2_rationale"] = {f: {"stage": f"S2{s}", "criterion": c, "reason": r} for f, s, c, r in RATIONALE}
-    feats["S2_status"] = "11/18 팀 결정: 최종 S2 = S2B. S2A는 단계별 비교용. 'S2' 키는 초안(= S2A)으로 호환용"
+    feats["S2_status"] = ("11/18 팀 결정: 최종 S2 = S2B. S2A는 단계별 비교용. 11/20 S2C 추가 (빈 페이지 피처 제거). "
+                          "'S2' 키는 초안(= S2A)으로 호환용")
     with open(FEATURES, "w", encoding="utf-8") as f:
         json.dump(feats, f, ensure_ascii=False, indent=2)
     print(f"\nfeatures.json에 추가: S2A {len(feats['S2A'])}개 (제거 {len(S2A_REMOVE)}), "
-          f"S2B {len(feats['S2B'])}개 (제거 {len(S2B_REMOVE)})")
+          f"S2B {len(feats['S2B'])}개 (제거 {len(S2B_REMOVE)}), S2C {len(feats['S2C'])}개 (제거 {len(S2C_REMOVE)})")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="저장하지 않고 근거 표만 출력")
     a = ap.parse_args()
-    df = pd.read_csv(DATASET, encoding="utf-8", usecols=S2B_REMOVE + ["is_phishing"])
+    df = pd.read_csv(DATASET, encoding="utf-8", usecols=S2C_REMOVE + ["is_phishing"])
     pd.set_option("display.width", 200)
     print("제거 피처 근거 (single_feature_acc: 그 피처 하나로 임계값 하나만 써서 낸 최고 정확도)")
     print(evidence(df).to_string())
